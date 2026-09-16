@@ -24,7 +24,6 @@
 #include <linux/timer.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
-#include <linux/wait.h>
 #include <media/v4l2-event.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-subdev.h>
@@ -64,8 +63,7 @@
 #define CSIPHY_2PH_REGS                  5
 #define CSIPHY_3PH_REGS                  6
 
-#define CSIPHY_MAX_INSTANCES         2
-#define CSIPHY_PROBE_TIMEOUT_MS   5000
+#define CSIPHY_MAX_INSTANCES     2
 
 #define CAM_CSIPHY_MAX_DPHY_LANES    4
 #define CAM_CSIPHY_MAX_CPHY_LANES    3
@@ -246,12 +244,6 @@ struct cam_csiphy_param {
 };
 
 /**
- * CSIPHY_PROBE_TIMEOUT_MS: Max wait for another sensor
- * to finish probing on a shared CSIPHY before timing out.
- */
-#define CSIPHY_PROBE_TIMEOUT_MS   5000
-
-/**
  * struct csiphy_device
  * @device_name: Device name
  * @pdev: Platform device
@@ -281,7 +273,6 @@ struct cam_csiphy_param {
  * @cpas_handle: CPAS handle
  * @config_count: Config reg count
  * @csiphy_cpas_cp_reg_mask: CP reg mask for phy instance
- * @probe_wq: Waitqueue for probe serialization
  */
 struct csiphy_device {
 	char device_name[CAM_CTX_DEV_NAME_MAX_LENGTH];
@@ -308,7 +299,6 @@ struct csiphy_device {
 	uint32_t cpas_handle;
 	uint32_t config_count;
 	uint64_t csiphy_cpas_cp_reg_mask[CSIPHY_MAX_INSTANCES];
-	wait_queue_head_t probe_wq;
 };
 
 #endif /* _CAM_CSIPHY_DEV_H_ */
