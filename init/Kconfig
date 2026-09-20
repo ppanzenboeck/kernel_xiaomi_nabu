@@ -34,6 +34,10 @@ config AS_IS_LLVM
 	bool "LLVM assembler"
 	default y
 
+config KFENCE
+	bool "Kernel Electric-Fence"
+	default y
+
 config CONSTRUCTORS
 	bool
 	depends on !UML
