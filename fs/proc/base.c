@@ -95,6 +95,9 @@
 #include <linux/flex_array.h>
 #include <linux/posix-timers.h>
 #include <linux/cpufreq_times.h>
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs.h>
+#endif
 #ifdef CONFIG_HARDWALL
 #include <asm/hardwall.h>
 #endif
@@ -1855,6 +1858,17 @@ static int do_proc_readlink(struct path *path, char __user *buffer, int buflen)
 
 	if (len > buflen)
 		len = buflen;
+
+#ifdef CONFIG_KSU_SUSFS_SUS_PROC_FD_LINK
+	if (!susfs_is_sus_proc_fd_link_list_empty()) {
+		if (susfs_sus_proc_fd_link(pathname, len))
+			goto orig_flow;
+	}
+#endif
+
+#ifdef CONFIG_KSU_SUSFS_SUS_PROC_FD_LINK
+orig_flow:
+#endif
 	if (copy_to_user(buffer, pathname, len))
 		len = -EFAULT;
  out:

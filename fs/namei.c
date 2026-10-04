@@ -40,6 +40,15 @@
 #include <linux/init_task.h>
 #include <linux/uaccess.h>
 
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+#include <linux/susfs_def.h>
+#define ND_STATE_OPEN_LAST BIT(1)
+#endif
+
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs.h>
+#endif
+
 #include "internal.h"
 #include "mount.h"
 
@@ -3279,14 +3288,38 @@ static int lookup_open(struct nameidata *nd, struct path *path,
 	umode_t mode = op->mode;
 	DECLARE_WAIT_QUEUE_HEAD_ONSTACK(wq);
 
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	bool found_sus_path = false;
+	bool is_open_last = nd->state & ND_STATE_OPEN_LAST;
+#endif
+
 	if (unlikely(IS_DEADDIR(dir_inode)))
 		return -ENOENT;
 
 	*opened &= ~FILE_CREATED;
 	dentry = d_lookup(dir, &nd->last);
+
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	if (is_open_last && dentry && !IS_ERR(dentry) &&
+	    dentry->d_inode &&
+	    susfs_is_inode_sus_path(dentry->d_inode)) {
+		if (d_in_lookup(dentry))
+			d_lookup_done(dentry);
+		dput(dentry);
+		dentry = NULL;
+		found_sus_path = true;
+	}
+#endif
+
 	for (;;) {
 		if (!dentry) {
-			dentry = d_alloc_parallel(dir, &nd->last, &wq);
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+			if (found_sus_path)
+				dentry = d_alloc_parallel(
+					dir, &susfs_fake_qstr_name, &wq);
+			else
+#endif
+				dentry = d_alloc_parallel(dir, &nd->last, &wq);
 			if (IS_ERR(dentry))
 				return PTR_ERR(dentry);
 		}
@@ -3343,11 +3376,21 @@ static int lookup_open(struct nameidata *nd, struct path *path,
 	}
 
 	if (dir_inode->i_op->atomic_open) {
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+		/*
+		 * Linux 4.19 may open the file directly from atomic_open().
+		 * SUSFS v2 OPEN_REDIRECT must inspect the resolved inode and
+		 * redirect before the original file is opened, so use the
+		 * ordinary lookup/create path while OPEN_REDIRECT is enabled.
+		 */
+		goto no_open;
+#else
 		error = atomic_open(nd, dentry, path, file, op, open_flag,
 				    mode, opened);
 		if (unlikely(error == -ENOENT) && create_error)
 			error = create_error;
 		return error;
+#endif
 	}
 
 no_open:
@@ -3398,7 +3441,8 @@ out_dput:
  */
 static int do_last(struct nameidata *nd,
 		   struct file *file, const struct open_flags *op,
-		   int *opened)
+		   int *opened,
+		   struct filename **redirect_filename)
 {
 	struct dentry *dir = nd->path.dentry;
 	kuid_t dir_uid = nd->inode->i_uid;
@@ -3414,6 +3458,9 @@ static int do_last(struct nameidata *nd,
 
 	nd->flags &= ~LOOKUP_PARENT;
 	nd->flags |= op->intent;
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	nd->state |= ND_STATE_OPEN_LAST;
+#endif
 
 	if (nd->last_type != LAST_NORM) {
 		error = handle_dots(nd, nd->last_type);
@@ -3533,6 +3580,29 @@ finish_open:
 	error = complete_walk(nd);
 	if (error)
 		return error;
+
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	/*
+	 * Native SUSFS v2 OPEN_REDIRECT: resolve the original inode first,
+	 * then restart pathname resolution with the configured redirected
+	 * filename before may_open()/vfs_open() touches the original file.
+	 */
+	if (redirect_filename && nd->dfd != -1 &&
+	    SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(
+		    d_inode(nd->path.dentry))) {
+		struct filename *fake_filename;
+
+		fake_filename =
+			susfs_open_redirect_spoof_do_sys_openat(
+				d_inode(nd->path.dentry));
+
+		if (fake_filename && !IS_ERR(fake_filename)) {
+			*redirect_filename = fake_filename;
+			error = 0;
+			goto out;
+		}
+	}
+#endif
 	audit_inode(nd->name, nd->path.dentry, 0);
 	if (open_flag & O_CREAT) {
 		error = -EISDIR;
@@ -3626,9 +3696,38 @@ static int do_tmpfile(struct nameidata *nd, unsigned flags,
 		const struct open_flags *op,
 		struct file *file, int *opened)
 {
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	int old_dfd = nd->dfd;
+	struct filename *fake_filename = NULL;
+#endif
 	struct dentry *child;
 	struct path path;
 	int error = path_lookupat(nd, flags | LOOKUP_DIRECTORY, &path);
+
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	if (likely(!error) && old_dfd != -1 &&
+	    SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(
+		    d_inode(path.dentry))) {
+		fake_filename =
+			susfs_open_redirect_spoof_do_sys_openat(
+				d_inode(path.dentry));
+
+		if (fake_filename && !IS_ERR(fake_filename)) {
+			path_put(&path);
+			restore_nameidata();
+			set_nameidata(nd, old_dfd, fake_filename);
+
+			error = path_lookupat(nd,
+					     flags | LOOKUP_DIRECTORY,
+					     &path);
+			if (unlikely(error)) {
+				putname(fake_filename);
+				return error;
+			}
+		}
+	}
+#endif
+
 	if (unlikely(error))
 		return error;
 	error = mnt_want_write(path.mnt);
@@ -3656,18 +3755,53 @@ out2:
 	mnt_drop_write(path.mnt);
 out:
 	path_put(&path);
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	if (fake_filename && !IS_ERR(fake_filename))
+		putname(fake_filename);
+#endif
 	return error;
 }
 
 static int do_o_path(struct nameidata *nd, unsigned flags, struct file *file)
 {
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	int old_dfd = nd->dfd;
+	struct filename *fake_filename = NULL;
+#endif
 	struct path path;
 	int error = path_lookupat(nd, flags, &path);
+
 	if (!error) {
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+		if (old_dfd != -1 &&
+		    SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(
+			    d_inode(path.dentry))) {
+			fake_filename =
+				susfs_open_redirect_spoof_do_sys_openat(
+					d_inode(path.dentry));
+
+			if (fake_filename && !IS_ERR(fake_filename)) {
+				path_put(&path);
+				restore_nameidata();
+				set_nameidata(nd, old_dfd, fake_filename);
+
+				error = path_lookupat(nd, flags, &path);
+				if (unlikely(error)) {
+					putname(fake_filename);
+					return error;
+				}
+			}
+		}
+#endif
 		audit_inode(nd->name, path.dentry, 0);
 		error = vfs_open(&path, file);
 		path_put(&path);
 	}
+
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	if (fake_filename && !IS_ERR(fake_filename))
+		putname(fake_filename);
+#endif
 	return error;
 }
 
@@ -3697,13 +3831,23 @@ static struct file *path_openat(struct nameidata *nd,
 		goto out2;
 	}
 
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	int old_dfd = nd->dfd;
+	struct filename *fake_filename = NULL;
+#endif
 	s = path_init(nd, flags);
 	if (IS_ERR(s)) {
 		put_filp(file);
 		return ERR_CAST(s);
 	}
 	while (!(error = link_path_walk(s, nd)) &&
-		(error = do_last(nd, file, op, &opened)) > 0) {
+		(error = do_last(nd, file, op, &opened,
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+				 &fake_filename
+#else
+				 NULL
+#endif
+				 )) > 0) {
 		nd->flags &= ~(LOOKUP_OPEN|LOOKUP_CREATE|LOOKUP_EXCL);
 		s = trailing_symlink(nd);
 		if (IS_ERR(s)) {
@@ -3711,7 +3855,33 @@ static struct file *path_openat(struct nameidata *nd,
 			break;
 		}
 	}
+
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	if (!error && fake_filename && !IS_ERR(fake_filename)) {
+		terminate_walk(nd);
+		restore_nameidata();
+		set_nameidata(nd, old_dfd, fake_filename);
+
+		s = path_init(nd, flags);
+		while (!(error = link_path_walk(s, nd)) &&
+		       (error = do_last(nd, file, op, &opened, NULL)) > 0) {
+			nd->flags &=
+				~(LOOKUP_OPEN|LOOKUP_CREATE|LOOKUP_EXCL);
+			s = trailing_symlink(nd);
+			if (IS_ERR(s)) {
+				error = PTR_ERR(s);
+				break;
+			}
+		}
+	}
+#endif
+
 	terminate_walk(nd);
+
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	if (fake_filename && !IS_ERR(fake_filename))
+		putname(fake_filename);
+#endif
 out2:
 	if (!(opened & FILE_OPENED)) {
 		BUG_ON(!error);
@@ -4937,8 +5107,17 @@ int vfs_readlink(struct dentry *dentry, char __user *buffer, int buflen)
 	struct inode *inode = d_inode(dentry);
 
 	if (unlikely(!(inode->i_opflags & IOP_DEFAULT_READLINK))) {
-		if (unlikely(inode->i_op->readlink))
+		if (unlikely(inode->i_op->readlink)) {
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+			if (SUSFS_IS_INODE_OPEN_REDIRECT(inode)) {
+				int res = susfs_open_redirect_spoof_vfs_readlink(
+					inode, buffer, buflen);
+				if (!res)
+					return res;
+			}
+#endif
 			return inode->i_op->readlink(dentry, buffer, buflen);
+		}
 
 		if (!d_is_symlink(dentry))
 			return -EINVAL;
@@ -4947,6 +5126,15 @@ int vfs_readlink(struct dentry *dentry, char __user *buffer, int buflen)
 		inode->i_opflags |= IOP_DEFAULT_READLINK;
 		spin_unlock(&inode->i_lock);
 	}
+
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	if (SUSFS_IS_INODE_OPEN_REDIRECT(inode)) {
+		res = susfs_open_redirect_spoof_vfs_readlink(
+			inode, buffer, buflen);
+		if (!res)
+			return res;
+	}
+#endif
 
 	return generic_readlink(dentry, buffer, buflen);
 }

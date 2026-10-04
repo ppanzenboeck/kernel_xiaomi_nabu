@@ -207,8 +207,8 @@ always := dochecklxdialog
 HOST_EXTRACFLAGS += $(shell $(CONFIG_SHELL) $(srctree)/$(src)/check.sh $(HOSTCC) $(HOSTCFLAGS))
 
 # generated files seem to need this to find local include files
-HOSTCFLAGS_zconf.lex.o	:= -I $(srctree)/$(src)
-HOSTCFLAGS_zconf.tab.o	:= -I $(srctree)/$(src)
+HOSTCFLAGS_zconf.lex.o	:= -I $(srctree)/$(src) -I $(obj)
+HOSTCFLAGS_zconf.tab.o	:= -I $(srctree)/$(src) -I $(obj)
 
 LEX_PREFIX_zconf	:= zconf
 YACC_PREFIX_zconf	:= zconf
@@ -282,6 +282,7 @@ $(obj)/.tmp_gtkcheck:
 endif
 
 $(obj)/zconf.tab.o: $(obj)/zconf.lex.c
+$(obj)/zconf.tab.c: $(obj)/zconf.lex.c
 
 $(obj)/qconf.o: $(obj)/qconf.moc
 
