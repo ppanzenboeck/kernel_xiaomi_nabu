@@ -92,16 +92,11 @@ static inline bool susfs_is_current_proc_umounted_app(void) {
 			current_uid().val >= 10000);
 }
 
-#define SUSFS_IS_INODE_SUS_MAP(inode) \
-		inode && \
-		unlikely(test_bit(AS_FLAGS_SUS_MAP, &inode->i_state)) && \
-		susfs_is_current_proc_umounted_app()
-
-#define SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode) \
+#define PRE_CHECK_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode) \
 		inode && \
 		unlikely(test_bit(AS_FLAGS_OPEN_REDIRECT, &inode->i_state))
 
-#define SUSFS_IS_INODE_OPEN_REDIRECT(inode) \
+#define PRE_CHECK_OPEN_REDIRECT(inode) \
 		inode && \
 		unlikely(test_bit(AS_FLAGS_OPEN_REDIRECT, &inode->i_state)) && \
 		susfs_is_current_proc_umounted_app()
