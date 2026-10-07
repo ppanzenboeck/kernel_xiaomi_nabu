@@ -146,9 +146,9 @@ static void mnt_free_id(struct mount *mnt)
  */
 static int mnt_alloc_group_id(struct mount *mnt)
 {
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 	int res;
 
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 	if (susfs_is_current_ksu_domain()) {
 		res = ida_alloc_min(&mnt_group_ida,
 				    DEFAULT_KSU_MNT_GROUP_ID,
@@ -156,7 +156,6 @@ static int mnt_alloc_group_id(struct mount *mnt)
 		goto out;
 	}
 #endif
-	int res;
 
 	if (!ida_pre_get(&mnt_group_ida, GFP_KERNEL))
 		return -ENOMEM;

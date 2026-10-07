@@ -42,7 +42,6 @@
 
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 #include <linux/susfs_def.h>
-#define ND_STATE_OPEN_LAST BIT(1)
 #endif
 
 #ifdef CONFIG_KSU_SUSFS
@@ -537,6 +536,9 @@ struct nameidata {
 	struct path	root;
 	struct inode	*inode; /* path.dentry.d_inode */
 	unsigned int	flags;
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	unsigned int    state;
+#endif
 	unsigned	seq, m_seq;
 	int		last_type;
 	unsigned	depth;
@@ -3812,6 +3814,10 @@ static struct file *path_openat(struct nameidata *nd,
 	struct file *file;
 	int opened = 0;
 	int error;
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	int old_dfd = nd->dfd;
+	struct filename *fake_filename = NULL;
+#endif
 
 	file = get_empty_filp();
 	if (IS_ERR(file))
@@ -3831,10 +3837,6 @@ static struct file *path_openat(struct nameidata *nd,
 		goto out2;
 	}
 
-#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-	int old_dfd = nd->dfd;
-	struct filename *fake_filename = NULL;
-#endif
 	s = path_init(nd, flags);
 	if (IS_ERR(s)) {
 		put_filp(file);
@@ -5105,12 +5107,15 @@ static int generic_readlink(struct dentry *dentry, char __user *buffer,
 int vfs_readlink(struct dentry *dentry, char __user *buffer, int buflen)
 {
 	struct inode *inode = d_inode(dentry);
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	int res;
+#endif
 
 	if (unlikely(!(inode->i_opflags & IOP_DEFAULT_READLINK))) {
 		if (unlikely(inode->i_op->readlink)) {
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 			if (SUSFS_IS_INODE_OPEN_REDIRECT(inode)) {
-				int res = susfs_open_redirect_spoof_vfs_readlink(
+				res = susfs_open_redirect_spoof_vfs_readlink(
 					inode, buffer, buflen);
 				if (!res)
 					return res;
