@@ -10,12 +10,7 @@
 #include <linux/types.h>
 #include <linux/wait.h>
 
-#include <linux/version.h>
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 16, 0)
-#ifndef __poll_t
-typedef unsigned int __poll_t;
-#endif
-#endif
+
 
 #define KSU_EVENT_RECORD_FLAG_INTERNAL (1U << 0)
 #define KSU_EVENT_QUEUE_TYPE_DROPPED ((__u16)0xFFFF)

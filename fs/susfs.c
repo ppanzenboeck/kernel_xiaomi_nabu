@@ -1392,12 +1392,33 @@ static int watch_one_dir(struct watch_dir *wd)
  * synchronize_srcu on the same SRCU struct, causing a permanent deadlock).
  * Cleanup is deferred to a delayed_work that runs outside the SRCU context.
  */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
 static int susfs_handle_sdcard_event(struct fsnotify_group *group,
 				     struct inode *inode, u32 mask,
 				     const void *data, int data_type,
 				     const unsigned char *file_name,
 				     u32 cookie,
 				     struct fsnotify_iter_info *iter_info)
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
+static int susfs_handle_sdcard_event(struct fsnotify_group *group,
+				     struct inode *inode,
+				     struct fsnotify_mark *inode_mark,
+				     struct fsnotify_mark *vfsmount_mark,
+				     u32 mask,
+				     const void *data, int data_type,
+				     const unsigned char *file_name,
+				     u32 cookie,
+				     struct fsnotify_iter_info *iter_info)
+#else
+static int susfs_handle_sdcard_event(struct fsnotify_group *group,
+				     struct inode *inode,
+				     struct fsnotify_mark *inode_mark,
+				     struct fsnotify_mark *vfsmount_mark,
+				     u32 mask, void *data,
+				     int data_type,
+				     const unsigned char *file_name,
+				     u32 cookie)
+#endif
 {
 	if (!file_name ||
 	    strcmp((const char *)file_name, "Android"))
@@ -1423,6 +1444,7 @@ static int add_mark_on_inode(struct inode *inode, u32 mask,
 								struct fsnotify_mark **out)
 {
 	struct fsnotify_mark *m;
+	int ret;
 
 	m = kzalloc(sizeof(*m), GFP_KERNEL);
 	if (!m)
@@ -1431,7 +1453,12 @@ static int add_mark_on_inode(struct inode *inode, u32 mask,
 	fsnotify_init_mark(m, g);
 	m->mask = mask;
 
-	if (fsnotify_add_inode_mark(m, inode, 0)) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
+	ret = fsnotify_add_inode_mark(m, inode, 0);
+#else
+	ret = fsnotify_add_mark(m, inode, NULL, 0);
+#endif
+	if (ret) {
 		fsnotify_put_mark(m);
 		return -EINVAL;
 	}
